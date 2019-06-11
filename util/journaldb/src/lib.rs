@@ -29,6 +29,7 @@ extern crate memory_db;
 extern crate parking_lot;
 extern crate fastmap;
 extern crate rlp;
+extern crate elastic_array;
 
 #[cfg(test)]
 extern crate env_logger;
@@ -39,6 +40,7 @@ extern crate kvdb_memorydb;
 
 use std::{fmt, str, io};
 use std::sync::Arc;
+use elastic_array::ElasticArray1024;
 
 /// Export the journaldb module.
 mod traits;
@@ -142,11 +144,11 @@ impl fmt::Display for Algorithm {
 }
 
 /// Create a new `JournalDB` trait object over a generic key-value database.
-pub fn new(backing: Arc<::kvdb::KeyValueDB>, algorithm: Algorithm, col: Option<u32>) -> Box<JournalDB> {
+pub fn new(backing: Arc<::kvdb::KeyValueDB>, algorithm: Algorithm, col: Option<u32>, history_to_keep: &[(u64,u64)]) -> Box<JournalDB> {
 	match algorithm {
 		Algorithm::Archive => Box::new(archivedb::ArchiveDB::new(backing, col)),
 		Algorithm::EarlyMerge => Box::new(earlymergedb::EarlyMergeDB::new(backing, col)),
-		Algorithm::OverlayRecent => Box::new(overlayrecentdb::OverlayRecentDB::new(backing, col)),
+		Algorithm::OverlayRecent => Box::new(overlayrecentdb::OverlayRecentDB::new(backing, col, ElasticArray1024::from_slice(history_to_keep))),
 		Algorithm::RefCounted => Box::new(refcounteddb::RefCountedDB::new(backing, col)),
 	}
 }
