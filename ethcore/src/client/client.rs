@@ -231,6 +231,9 @@ pub struct Client {
 	/// Number of eras kept in a journal before they are pruned
 	history: u64,
 
+	/// Special ranges of eras to keep and not prune
+	historical_eras: Vec<(u64, u64)>,
+
 	/// An action to be done if a mode/spec_name change happens
 	on_user_defaults_change: Mutex<Option<Box<dyn FnMut(Option<Mode>) + 'static + Send>>>,
 
@@ -743,6 +746,8 @@ impl Client {
 			config.history
 		};
 
+		let historical_eras = config.historical_eras.clone();
+
 		if !chain.block_header_data(&chain.best_block_hash()).map_or(true, |h| state_db.journal_db().contains(&h.state_root())) {
 			warn!("State root not found for block #{} ({:x})", chain.best_block_number(), chain.best_block_hash());
 		}
@@ -780,6 +785,7 @@ impl Client {
 			last_hashes: RwLock::new(VecDeque::new()),
 			factories: factories,
 			history: history,
+			historical_eras: historical_eras,
 			on_user_defaults_change: Mutex::new(None),
 			registrar_address,
 			exit_handler: Mutex::new(None),
@@ -965,7 +971,7 @@ impl Client {
 
 			if !needs_pruning { break }
 			match state_db.journal_db().earliest_era() {
-				Some(era) if era + self.history <= number => {
+				Some(era) if era + self.history <= number && (|| self.historical_eras.iter().all(|&(h,l)| (h > era || era < l)))() => {
 					trace!(target: "client", "Pruning state for ancient era {}", era);
 					match chain.block_hash(era) {
 						Some(ancient_hash) => {

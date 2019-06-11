@@ -125,6 +125,7 @@ struct JournalOverlay {
 	journal: HashMap<u64, Vec<JournalEntry>>,
 	latest_era: Option<u64>,
 	earliest_era: Option<u64>,
+	historical_eras: Vec<(u64,u64)>,
 	cumulative_size: usize, // cumulative size of all entries.
 }
 
@@ -187,15 +188,19 @@ impl OverlayRecentDB {
 		let mut count = 0;
 		let mut latest_era = None;
 		let mut earliest_era = None;
+		let mut historical_eras = vec![];
 		let mut cumulative_size = 0;
+//		let mut _hist_eras = Vec::new();
 		if let Some(val) = db.get(col, &LATEST_ERA_KEY).expect("Low-level database error.") {
+			let mut found_earliest= false;
 			let mut era = decode::<u64>(&val).expect("decoding db value failed");
 			latest_era = Some(era);
+			let mut db_key = DatabaseKey {
+				era,
+				index: 0usize,
+			};
+			// Loop from latest_era backwards until we no longer find an era (this is earliest_era), then loop through looking for historical_eras
 			loop {
-				let mut db_key = DatabaseKey {
-					era,
-					index: 0usize,
-				};
 				while let Some(rlp_data) = db.get(col, &encode(&db_key)).expect("Low-level database error.") {
 					trace!("read_overlay: era={}, index={}", era, db_key.index);
 					let value = decode::<DatabaseValue>(&rlp_data).expect(&format!("read_overlay: Error decoding DatabaseValue era={}, index{}", era, db_key.index));
@@ -217,9 +222,24 @@ impl OverlayRecentDB {
 						deletions: value.deletes,
 					});
 					db_key.index += 1;
-					earliest_era = Some(era);
+					if !found_earliest {
+						earliest_era = Some(era);
+					}
+
+					let last_hist_era_range = match historical_eras.pop() {
+						None => {
+							(era, era)
+						}
+						Some((start_era, end_era)) => {
+							(if (end_era - 1) == era { start_era } else { era }, era)
+						}
+					};
+					historical_eras.push(last_hist_era_range)
 				};
-				if db_key.index == 0 || era == 0 {
+				if !found_earliest {
+					found_earliest = true;
+				}
+				if db_key.index == 0 || era == 0{
 					break;
 				}
 				era -= 1;
@@ -229,10 +249,11 @@ impl OverlayRecentDB {
 		JournalOverlay {
 			backing_overlay: overlay,
 			pending_overlay: HashMap::default(),
-			journal: journal,
-			latest_era: latest_era,
-			earliest_era: earliest_era,
-			cumulative_size: cumulative_size,
+			journal,
+			latest_era,
+			earliest_era,
+			historical_eras,
+			cumulative_size,
 		}
 	}
 
@@ -299,6 +320,8 @@ impl JournalDB for OverlayRecentDB {
 
 	fn earliest_era(&self) -> Option<u64> { self.journal_overlay.read().earliest_era }
 
+	fn historical_eras(&self) -> Vec<(u64,u64)> { self.journal_overlay.read().historical_eras.to_vec() }
+
 	fn state(&self, key: &H256) -> Option<Bytes> {
 		let journal_overlay = self.journal_overlay.read();
 		let key = to_short_key(key);
@@ -357,6 +380,30 @@ impl JournalDB for OverlayRecentDB {
 		if journal_overlay.earliest_era.map_or(true, |e| e > now) {
 			trace!(target: "journaldb", "Set earliest era to {}", now);
 			journal_overlay.earliest_era = Some(now);
+		}
+
+		match journal_overlay.historical_eras.len() {
+			0 => { journal_overlay.historical_eras = vec![(now, now)] }
+			_ => {
+				if !journal_overlay.historical_eras.iter().any(|&(h, l)| h > now && now > l) {
+					// not within existing ranges
+					let (bordering, mut not_bordering): (Vec<(u64, u64)>, Vec<_>) = journal_overlay.historical_eras.iter().partition(|&&(h, l)| now - 1 == h || now + 1 == l);
+					let n_bordering = bordering.len();
+
+//					println!("era {}, bordering {}: {:?}, not_bordering: {:?}", now, n_bordering, bordering, not_bordering);
+
+					match n_bordering {
+						0 => { Some((now, now))}
+						2 => { Some(if bordering[0].0 == bordering[1].1 { (bordering[1].0, bordering[0].1) } else { (bordering[0].0, bordering[1].1) }) }
+						1 => { Some(if bordering[0].0 + 1 == now { (now, bordering[0].1) } else { (bordering[0].0, now) }) }
+						_ => { panic!("How could a number border more than <0 or >2 ranges?") }
+					}.map(|p| not_bordering.push(p));
+
+					not_bordering.sort_by(|&(h1, _l1), &(h2, _l2)| h2.cmp(&h1));
+
+					journal_overlay.historical_eras = not_bordering;
+				}
+			}
 		}
 
 		journal_overlay.journal.entry(now).or_insert_with(Vec::new).push(JournalEntry { id: id.clone(), insertions: inserted_keys, deletions: removed_keys });
@@ -1069,5 +1116,69 @@ mod tests {
 		drop(jdb);
 		let jdb = OverlayRecentDB::new(shared_db, None);
 		assert_eq!(jdb.earliest_era(), None);
+	}
+
+
+	#[test]
+	fn historical_eras() {
+		let shared_db = Arc::new(kvdb_memorydb::create(0));
+		let shared_db_cloned = shared_db.clone();
+
+		// empty DB
+		let mut jdb = OverlayRecentDB::new(shared_db_cloned, None);
+		assert_eq!(jdb.historical_eras().len(), 0);
+
+		// single journalled era.
+		let _key = jdb.insert(b"hello!");
+		let mut batch = jdb.backing().transaction();
+		jdb.emplace(keccak(b"0"), DBValue::from_slice(b"0"));
+		jdb.journal_under(&mut batch, 0, &keccak(b"0")).unwrap();
+		jdb.backing().write_buffered(batch);
+
+		assert_eq!(jdb.earliest_era(), Some(0));
+		assert_eq!(jdb.historical_eras().len(), 1);
+
+		// second journalled era.
+		let mut batch = jdb.backing().transaction();
+		jdb.emplace(keccak(b"1"), DBValue::from_slice(b"1"));
+		jdb.journal_under(&mut batch, 1, &keccak(b"1")).unwrap();
+		jdb.backing().write_buffered(batch);
+
+		assert_eq!(jdb.earliest_era(), Some(0));
+		assert_eq!(jdb.historical_eras().len(), 1);
+
+		// add eras in future.
+		let mut batch = jdb.backing().transaction();
+		jdb.emplace(keccak(b"3"), DBValue::from_slice(b"3"));
+		jdb.journal_under(&mut batch, 3, &keccak(b"3")).unwrap();
+		jdb.emplace(keccak(b"4"), DBValue::from_slice(b"4"));
+		jdb.journal_under(&mut batch, 4, &keccak(b"4")).unwrap();
+		jdb.emplace(keccak(b"5"), DBValue::from_slice(b"5"));
+		jdb.journal_under(&mut batch, 5, &keccak(b"5")).unwrap();
+		jdb.mark_canonical(&mut batch, 3, &keccak(b"3")).unwrap();
+		jdb.backing().write_buffered(batch);
+
+		assert_eq!(jdb.latest_era(), Some(5));
+		assert_eq!(jdb.earliest_era(), Some(4));
+		assert_eq!(jdb.historical_eras().len(), 2);
+
+		println!("{:?}", jdb.historical_eras());
+////		assert!(jdb.read_overlay);
+//		assert!(jdb.contains(&keccak(b"0")));
+//		assert!(!jdb.contains(&keccak(b"3")));
+//
+//		assert_eq!(jdb.historical_eras(), vec![(1, 0)]);
+
+//		// no journalled eras.
+//		let mut batch = jdb.backing().transaction();
+//		jdb.mark_canonical(&mut batch, 1, &keccak(b"1")).unwrap();
+//		jdb.backing().write_buffered(batch);
+//
+//		assert_eq!(jdb.earliest_era(), Some(1));
+//
+//		// reconstructed: no journal entries.
+//		drop(jdb);
+//		let jdb = OverlayRecentDB::new(shared_db, None);
+//		assert_eq!(jdb.earliest_era(), None);
 	}
 }

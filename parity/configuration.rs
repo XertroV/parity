@@ -119,6 +119,8 @@ impl Configuration {
 		let dirs = self.directories();
 		let pruning = self.args.arg_pruning.parse()?;
 		let pruning_history = self.args.arg_pruning_history;
+		let pruning_historical_eras_interim: Vec<String> = self.args.arg_pruning_historical_eras.parse()?;
+		let pruning_historical_eras: Vec<(u64,u64)> = pruning_historical_eras_interim.iter().map(|r| r.split("-")).collect();
 		let vm_type = self.vm_type()?;
 		let spec = self.chain()?;
 		let mode = match self.args.arg_mode.as_ref() {
@@ -188,6 +190,7 @@ impl Configuration {
 				spec,
 				pruning,
 				pruning_history,
+				pruning_historical_eras,
 				pruning_memory: self.args.arg_pruning_memory,
 				tracing,
 				fat_db,
@@ -254,6 +257,7 @@ impl Configuration {
 				format: format,
 				pruning: pruning,
 				pruning_history: pruning_history,
+//				pruning_historical_eras: pruning_historical_eras,
 				pruning_memory: self.args.arg_pruning_memory,
 				compaction: compaction,
 				tracing: tracing,
@@ -372,6 +376,7 @@ impl Configuration {
 				spec: spec,
 				pruning: pruning,
 				pruning_history: pruning_history,
+				pruning_historical_eras,
 				pruning_memory: self.args.arg_pruning_memory,
 				daemon: daemon,
 				logger_config: logger_config.clone(),
@@ -828,6 +833,15 @@ impl Configuration {
 		}
 		let hosts = hosts.split(',').map(Into::into).collect();
 		Some(hosts)
+	}
+
+	fn parse_range<T>(range: &str) -> Option<(T, T)>
+		where T: std::str::FromStr {
+		let range: Vec<T> = range.split('-').map(std::str::FromStr::from_str).collect()?;
+		match range {
+			&[h, l] => return Some((h, l)),
+			_ => return None
+		}
 	}
 
 	fn rpc_hosts(&self) -> Option<Vec<String>> {
