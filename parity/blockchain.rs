@@ -82,6 +82,7 @@ pub struct ResetBlockchain {
 	pub spec: SpecType,
 	pub pruning: Pruning,
 	pub pruning_history: u64,
+	pub pruning_historical_eras: Vec<(u64,u64)>,
 	pub pruning_memory: usize,
 	pub tracing: Switch,
 	pub fat_db: Switch,

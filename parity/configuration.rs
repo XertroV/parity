@@ -119,8 +119,8 @@ impl Configuration {
 		let dirs = self.directories();
 		let pruning = self.args.arg_pruning.parse()?;
 		let pruning_history = self.args.arg_pruning_history;
-		let pruning_historical_eras_interim: Vec<String> = self.args.arg_pruning_historical_eras.parse()?;
-		let pruning_historical_eras: Vec<(u64,u64)> = pruning_historical_eras_interim.iter().map(|r| r.split("-")).collect();
+		let pruning_historical_eras_opt: Option<Vec<(u64,u64)>> = Self::parse_vec(self.args.arg_pruning_historical_eras).unwrap().iter().map(Self::parse_range).collect();
+		let pruning_historical_eras: Vec<(u64,u64)> = pruning_historical_eras_opt.unwrap();
 		let vm_type = self.vm_type()?;
 		let spec = self.chain()?;
 		let mode = match self.args.arg_mode.as_ref() {
@@ -835,13 +835,23 @@ impl Configuration {
 		Some(hosts)
 	}
 
-	fn parse_range<T>(range: &str) -> Option<(T, T)>
+	fn parse_range<T>(range: &String) -> Option<(T, T)>
 		where T: std::str::FromStr {
-		let range: Vec<T> = range.split('-').map(std::str::FromStr::from_str).collect()?;
-		match range {
-			&[h, l] => return Some((h, l)),
-			_ => return None
+		let range_opt: Result<Vec<T>, _> = range.split('-').map(std::str::FromStr::from_str).collect();
+		match range_opt {
+			Ok(v) => {
+				match v.as_slice() {
+					&[h, l] => return Some((h, l)),
+					_ => return None
+				}
+			}
+			_ => { return None }
 		}
+	}
+
+	fn parse_vec(s: String) -> Option<Vec<String>> {
+		let v = s.split(',').map(Into::into).collect();
+		Some(v)
 	}
 
 	fn rpc_hosts(&self) -> Option<Vec<String>> {
@@ -1434,6 +1444,7 @@ mod tests {
 			spec: Default::default(),
 			pruning: Default::default(),
 			pruning_history: 64,
+			pruning_historical_eras: vec![],
 			pruning_memory: 32,
 			daemon: None,
 			logger_config: Default::default(),
