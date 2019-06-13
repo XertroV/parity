@@ -1911,7 +1911,7 @@ mod tests {
 			arg_tracing: "auto".into(),
 			arg_pruning: "auto".into(),
 			arg_pruning_history: 64u64,
-			arg_pruning_historical_eras: "".into(),
+			arg_pruning_historical_eras: "1500000-1000000,3500000-3000000".into(),
 			arg_pruning_memory: 500usize,
 			arg_cache_size_db: 64u32,
 			arg_cache_size_blocks: 8u32,
