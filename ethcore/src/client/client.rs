@@ -1055,7 +1055,7 @@ impl Client {
 			let db = self.state_db.read().boxed_clone();
 
 			// early exit for pruned blocks
-			if db.is_pruned() && self.pruning_info().earliest_state > block_number {
+			if db.is_pruned() && self.pruning_info().earliest_state > block_number && !self.pruning_has_block(block_number) {
 				return None;
 			}
 
@@ -2181,6 +2181,10 @@ impl BlockChainClient for Client {
 			earliest_chain: self.chain.read().first_block_number().unwrap_or(1),
 			earliest_state: self.state_db.read().journal_db().earliest_era().unwrap_or(0),
 		}
+	}
+
+	fn pruning_has_block(&self, block_number: u64) -> bool {
+		self.state_db.read().journal_db().historical_eras().iter().any(|&(h, l)| h >= block_number && block_number >= l)
 	}
 
 	fn transact_contract(&self, address: Address, data: Bytes) -> Result<(), transaction::Error> {

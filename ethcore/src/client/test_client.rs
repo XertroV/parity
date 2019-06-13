@@ -885,6 +885,10 @@ impl BlockChainClient for TestBlockChainClient {
 		}
 	}
 
+	fn pruning_has_block(&self, block_number: u64) -> bool {
+		return self.pruning_info().earliest_state >= block_number
+	}
+
 	fn transact_contract(&self, address: Address, data: Bytes) -> Result<(), transaction::Error> {
 		let transaction = Transaction {
 			nonce: self.latest_nonce(&self.miner.authoring_params().author),
