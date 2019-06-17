@@ -183,6 +183,7 @@ impl OverlayRecentDB {
 	}
 
 	fn read_overlay(db: &KeyValueDB, col: Option<u32>) -> JournalOverlay {
+		println!("read_overlay triggered. col: {:?}", col);
 		let mut journal = HashMap::new();
 		let mut overlay = ::new_memory_db();
 		let mut count = 0;
