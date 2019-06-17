@@ -259,7 +259,11 @@ impl OverlayRecentDB {
 	}
 
 	fn should_delete_era(&self, era: u64) -> bool {
-		return era != 999
+		info!("should_delete_era: {:?}", era);
+		info!("historical eras: {:?}", self.historical_eras());
+		let ret = era != 999 && !self.historical_eras().iter().any(|&(h,l)| h >= era && era >= l);
+		info!("should_delete_era {:?}: {:?}", era, ret);
+		return ret
 	}
 }
 

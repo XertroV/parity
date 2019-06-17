@@ -835,12 +835,12 @@ impl Configuration {
 	}
 
 	fn parse_range<T>(range: &String) -> Option<(T, T)>
-	    where T: std::str::FromStr + Clone {
+	    where T: std::str::FromStr + Clone + Ord {
 		let range_opt: Result<Vec<T>, _> = range.split('-').map(std::str::FromStr::from_str).collect();
 		match range_opt {
 			Ok(v) => {
 				match v.clone().as_slice() {
-					[h, l] => return Some((h.clone(), l.clone())),
+					[h, l] => return if *h > *l { Some((h.clone(), l.clone())) } else { Some((l.clone(), h.clone())) },
 					_ => return None
 				}
 			}

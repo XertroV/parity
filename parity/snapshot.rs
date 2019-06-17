@@ -178,6 +178,7 @@ impl SnapshotCommand {
 			algorithm,
 			self.pruning_history,
 			self.pruning_memory,
+			vec![],
 			true,
 			self.max_round_blocks_to_import,
 		);

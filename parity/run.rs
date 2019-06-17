@@ -532,6 +532,7 @@ fn execute_impl<Cr, Rr>(cmd: RunCmd, logger: Arc<RotatingLogger>, on_client_rq: 
 		algorithm,
 		cmd.pruning_history,
 		cmd.pruning_memory,
+		cmd.pruning_historical_eras,
 		cmd.check_seal,
 		cmd.max_round_blocks_to_import,
 	);
