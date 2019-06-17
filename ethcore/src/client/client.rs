@@ -970,18 +970,30 @@ impl Client {
 				state_db.journal_db().journal_size() >= self.config.history_mem;
 
 			if !needs_pruning { break }
+
 			match state_db.journal_db().earliest_era() {
-				Some(era) if era + self.history <= number && (|| self.historical_eras.iter().all(|&(h,l)| (h > era || era < l)))() => {
-					trace!(target: "client", "Pruning state for ancient era {}", era);
-					match chain.block_hash(era) {
-						Some(ancient_hash) => {
-							let mut batch = DBTransaction::new();
-							state_db.mark_canonical(&mut batch, era, &ancient_hash)?;
-							self.db.read().key_value().write_buffered(batch);
-							state_db.journal_db().flush();
+				Some(era) => { if era % 100 == 99 { error!("Encountered earliest era at {:?}!", era) } }
+				_ => {}
+			}
+			match state_db.journal_db().earliest_era() {
+				Some(era) => {
+					if era + self.history <= number {
+						// consider pruning
+						if true { // era != 999 && self.historical_eras.iter().all(|&(h, l)| (h > era || era < l)) {
+							error!(target: "client", "Pruning state for ancient era {}", era);
+							match chain.block_hash(era) {
+								Some(ancient_hash) => {
+									let mut batch = DBTransaction::new();
+									state_db.mark_canonical(&mut batch, era, &ancient_hash)?;
+									self.db.read().key_value().write_buffered(batch);
+									state_db.journal_db().flush();
+								}
+								None =>
+									debug!(target: "client", "Missing expected hash for block {}", era),
+							}
+						} else {
+
 						}
-						None =>
-							debug!(target: "client", "Missing expected hash for block {}", era),
 					}
 				}
 				_ => break, // means that every era is kept, no pruning necessary.
@@ -1054,12 +1066,16 @@ impl Client {
 		self.block_header(id).and_then(|header| {
 			let db = self.state_db.read().boxed_clone();
 
+			println!("pruning_has_block {:?}: {:?}", block_number, self.pruning_has_block(block_number));
+
 			// early exit for pruned blocks
 			if db.is_pruned() && self.pruning_info().earliest_state > block_number && !self.pruning_has_block(block_number) {
 				return None;
 			}
 
 			let root = header.state_root();
+
+			println!("pruning_has_block_debug::header.state_root: {:?}", root);
 			State::from_existing(db, root, self.engine.account_start_nonce(block_number), self.factories.clone()).ok()
 		})
 	}

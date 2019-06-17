@@ -65,6 +65,8 @@ pub enum Algorithm {
 	/// Keep all keys forever.
 	Archive,
 
+	/// Keep recent
+
 	/// Ancient and recent history maintained separately; recent history lasts for particular
 	/// number of blocks.
 	///

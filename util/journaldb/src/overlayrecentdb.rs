@@ -257,6 +257,9 @@ impl OverlayRecentDB {
 		}
 	}
 
+	fn should_delete_era(&self, era: u64) -> bool {
+		return era != 999
+	}
 }
 
 #[inline]
@@ -424,25 +427,27 @@ impl JournalDB for OverlayRecentDB {
 			let mut overlay_deletions: Vec<H256> = Vec::new();
 			let mut index = 0usize;
 			for mut journal in records.drain(..) {
-				//delete the record from the db
-				let db_key = DatabaseKey {
-					era: end_era,
-					index,
-				};
-				batch.delete(self.column, &encode(&db_key));
-				trace!(target: "journaldb", "Delete journal for time #{}.{}: {}, (canon was {}): +{} -{} entries", end_era, index, journal.id, canon_id, journal.insertions.len(), journal.deletions.len());
-				{
-					if *canon_id == journal.id {
-						for h in &journal.insertions {
-							if let Some((d, rc)) = journal_overlay.backing_overlay.raw(&to_short_key(h)) {
-								if rc > 0 {
-									canon_insertions.push((h.clone(), d.clone())); //TODO: optimize this to avoid data copy
+				if self.should_delete_era(end_era) {
+					//delete the record from the db
+					let db_key = DatabaseKey {
+						era: end_era,
+						index,
+					};
+					batch.delete(self.column, &encode(&db_key));
+					trace!(target: "journaldb", "Delete journal for time #{}.{}: {}, (canon was {}): +{} -{} entries", end_era, index, journal.id, canon_id, journal.insertions.len(), journal.deletions.len());
+					{
+						if *canon_id == journal.id {
+							for h in &journal.insertions {
+								if let Some((d, rc)) = journal_overlay.backing_overlay.raw(&to_short_key(h)) {
+									if rc > 0 {
+										canon_insertions.push((h.clone(), d.clone())); //TODO: optimize this to avoid data copy
+									}
 								}
 							}
+							canon_deletions = journal.deletions;
 						}
-						canon_deletions = journal.deletions;
+						overlay_deletions.append(&mut journal.insertions);
 					}
-					overlay_deletions.append(&mut journal.insertions);
 				}
 				index += 1;
 			}
@@ -468,7 +473,10 @@ impl JournalDB for OverlayRecentDB {
 				}
 			}
 		}
-		journal_overlay.journal.remove(&end_era);
+
+		if self.should_delete_era(end_era) {
+			journal_overlay.journal.remove(&end_era);
+		}
 
 		if !journal_overlay.journal.is_empty() {
 			trace!(target: "journaldb", "Set earliest_era to {}", end_era + 1);
