@@ -489,9 +489,11 @@ impl JournalDB for OverlayRecentDB {
 				journal_overlay.pending_overlay.insert(to_short_key(&k), v);
 			}
 			// update the overlay
-			for k in overlay_deletions {
-				if let Some(val) = journal_overlay.backing_overlay.remove_and_purge(&to_short_key(&k)) {
-					journal_overlay.cumulative_size -= val.len();
+			if should_delete {
+				for k in overlay_deletions {
+					if let Some(val) = journal_overlay.backing_overlay.remove_and_purge(&to_short_key(&k)) {
+						journal_overlay.cumulative_size -= val.len();
+					}
 				}
 			}
 			// apply canon deletions
