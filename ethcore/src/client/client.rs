@@ -721,7 +721,7 @@ impl Client {
 			accountdb: Default::default(),
 		};
 
-		let journal_db = journaldb::new(db.key_value().clone(), config.pruning, ::db::COL_STATE);
+		let journal_db = journaldb::new(db.key_value().clone(), config.pruning, ::db::COL_STATE, config.historical_eras.as_slice());
 		let mut state_db = StateDB::new(journal_db, config.state_cache_size);
 		if state_db.journal_db().is_empty() {
 			// Sets the correct state root.
@@ -746,8 +746,6 @@ impl Client {
 			config.history
 		};
 
-		let historical_eras = config.historical_eras.clone();
-
 		if !chain.block_header_data(&chain.best_block_hash()).map_or(true, |h| state_db.journal_db().contains(&h.state_root())) {
 			warn!("State root not found for block #{} ({:x})", chain.best_block_number(), chain.best_block_hash());
 		}
@@ -771,7 +769,7 @@ impl Client {
 			chain: RwLock::new(chain),
 			tracedb: tracedb,
 			engine: engine,
-			pruning: config.pruning.clone(),
+			pruning: config.pruning,
 			db: RwLock::new(db.clone()),
 			state_db: RwLock::new(state_db),
 			report: RwLock::new(Default::default()),
@@ -785,7 +783,7 @@ impl Client {
 			last_hashes: RwLock::new(VecDeque::new()),
 			factories: factories,
 			history: history,
-			historical_eras: historical_eras,
+			historical_eras: config.historical_eras.clone(),
 			on_user_defaults_change: Mutex::new(None),
 			registrar_address,
 			exit_handler: Mutex::new(None),
@@ -980,7 +978,7 @@ impl Client {
 					if era + self.history <= number {
 						// consider pruning
 						if true { // era != 999 && self.historical_eras.iter().all(|&(h, l)| (h > era || era < l)) {
-							error!(target: "client", "Pruning state for ancient era {}", era);
+							debug!(target: "client", "Pruning state for ancient era {}", era);
 							match chain.block_hash(era) {
 								Some(ancient_hash) => {
 									let mut batch = DBTransaction::new();
@@ -1066,17 +1064,20 @@ impl Client {
 		self.block_header(id).and_then(|header| {
 			let db = self.state_db.read().boxed_clone();
 
-			println!("pruning_has_block {:?}: {:?}", block_number, self.pruning_has_block(block_number));
+			println!("state_at bn:{:?} has_block:{:?}", block_number, self.pruning_has_block(block_number));
 
 			// early exit for pruned blocks
-			//if db.is_pruned() && self.pruning_info().earliest_state > block_number && !self.pruning_has_block(block_number) {
-		    //    return None;
-			//}
+			if db.is_pruned()
+				&& !self.pruning_has_block(block_number) {
+		        return None;
+			}
 
 			let root = header.state_root();
 
-			println!("pruning_has_block_debug::header.state_root: {:?}", root);
-			State::from_existing(db, root, self.engine.account_start_nonce(block_number), self.factories.clone()).ok()
+			println!("state_at -- header.state_root: {:?}, height: {:?}", root, block_number);
+			let res = State::from_existing(db, root, self.engine.account_start_nonce(block_number), self.factories.clone());
+			println!("state_at trie result: {:?}", res);
+			res.ok()
 		})
 	}
 
@@ -1338,7 +1339,7 @@ impl snapshot::DatabaseRestore for Client {
 		db.restore(new_db)?;
 
 		let cache_size = state_db.cache_size();
-		*state_db = StateDB::new(journaldb::new(db.key_value().clone(), self.pruning, ::db::COL_STATE), cache_size);
+		*state_db = StateDB::new(journaldb::new(db.key_value().clone(), self.pruning, ::db::COL_STATE, &[]), cache_size);
 		*chain = Arc::new(BlockChain::new(self.config.blockchain.clone(), &[], db.clone()));
 		*tracedb = TraceDB::new(self.config.tracing.clone(), db.clone(), chain.clone());
 		Ok(())
@@ -2200,7 +2201,8 @@ impl BlockChainClient for Client {
 	}
 
 	fn pruning_has_block(&self, block_number: u64) -> bool {
-		block_number == 999 || self.state_db.read().journal_db().historical_eras().iter().any(|&(h, l)| h >= block_number && block_number >= l)
+		self.pruning_info().earliest_state <= block_number
+		 || self.historical_eras.iter().any(|&(h, l)| h >= block_number && block_number >= l)
 	}
 
 	fn transact_contract(&self, address: Address, data: Bytes) -> Result<(), transaction::Error> {

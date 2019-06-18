@@ -175,7 +175,7 @@ impl SnapshotCommand {
 			self.compaction,
 			VMType::default(),
 			"".into(),
-			algorithm,
+			algorithm.clone(),
 			self.pruning_history,
 			self.pruning_memory,
 			vec![],

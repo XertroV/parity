@@ -33,6 +33,7 @@ use fastmap::H256FastMap;
 use rlp::{Rlp, RlpStream, encode, decode, DecoderError, Decodable, Encodable};
 use super::{DB_PREFIX_LEN, LATEST_ERA_KEY, JournalDB, error_negatively_reference_hash};
 use util::DatabaseKey;
+use elastic_array::ElasticArray1024;
 
 /// Implementation of the `JournalDB` trait for a disk-backed database with a memory overlay
 /// and, possibly, latent-removal semantics.
@@ -65,11 +66,14 @@ use util::DatabaseKey;
 /// the removed key is not present in the history overlay.
 /// 7. Delete ancient record from memory and disk.
 
+pub type HistoryToKeep = ElasticArray1024<(u64,u64)>;
+
 pub struct OverlayRecentDB {
 	transaction_overlay: MemoryDB<KeccakHasher, DBValue>,
 	backing: Arc<KeyValueDB>,
 	journal_overlay: Arc<RwLock<JournalOverlay>>,
 	column: Option<u32>,
+	history_to_keep: HistoryToKeep,
 }
 
 struct DatabaseValue {
@@ -125,7 +129,6 @@ struct JournalOverlay {
 	journal: HashMap<u64, Vec<JournalEntry>>,
 	latest_era: Option<u64>,
 	earliest_era: Option<u64>,
-	historical_eras: Vec<(u64,u64)>,
 	cumulative_size: usize, // cumulative size of all entries.
 }
 
@@ -149,25 +152,27 @@ impl Clone for OverlayRecentDB {
 			backing: self.backing.clone(),
 			journal_overlay: self.journal_overlay.clone(),
 			column: self.column.clone(),
+			history_to_keep: self.history_to_keep.clone(),
 		}
 	}
 }
 
 impl OverlayRecentDB {
 	/// Create a new instance.
-	pub fn new(backing: Arc<KeyValueDB>, col: Option<u32>) -> OverlayRecentDB {
-		let journal_overlay = Arc::new(RwLock::new(OverlayRecentDB::read_overlay(&*backing, col)));
+	pub fn new(backing: Arc<KeyValueDB>, col: Option<u32>, history_to_keep: HistoryToKeep) -> OverlayRecentDB {
+		let journal_overlay = Arc::new(RwLock::new(OverlayRecentDB::read_overlay(&*backing, col, history_to_keep.clone())));
 		OverlayRecentDB {
 			transaction_overlay: ::new_memory_db(),
 			backing: backing,
 			journal_overlay: journal_overlay,
 			column: col,
+			history_to_keep: history_to_keep.clone(),
 		}
 	}
 
 	#[cfg(test)]
 	fn can_reconstruct_refs(&self) -> bool {
-		let reconstructed = Self::read_overlay(&*self.backing, self.column);
+		let reconstructed = Self::read_overlay(&*self.backing, self.column, ElasticArray1024::new());
 		let journal_overlay = self.journal_overlay.read();
 		journal_overlay.backing_overlay == reconstructed.backing_overlay &&
 		journal_overlay.pending_overlay == reconstructed.pending_overlay &&
@@ -182,26 +187,24 @@ impl OverlayRecentDB {
 			.expect("Low-level database error. Some issue with your hard disk?")
 	}
 
-	fn read_overlay(db: &KeyValueDB, col: Option<u32>) -> JournalOverlay {
-		println!("read_overlay triggered. col: {:?}", col);
+	fn read_overlay(db: &KeyValueDB, col: Option<u32>, history_to_keep: HistoryToKeep) -> JournalOverlay {
 		let mut journal = HashMap::new();
 		let mut overlay = ::new_memory_db();
 		let mut count = 0;
 		let mut latest_era = None;
 		let mut earliest_era = None;
-		let mut historical_eras = vec![];
 		let mut cumulative_size = 0;
-//		let mut _hist_eras = Vec::new();
+		let mut _hist_to_check: HistoryToKeep = history_to_keep.clone();
+		let mut _hist_to_check_highs: Vec<u64> = history_to_keep.iter().map(|&(h, _l)| h).collect();
 		if let Some(val) = db.get(col, &LATEST_ERA_KEY).expect("Low-level database error.") {
-			let mut found_earliest= false;
 			let mut era = decode::<u64>(&val).expect("decoding db value failed");
 			latest_era = Some(era);
-			let mut db_key = DatabaseKey {
-				era,
-				index: 0usize,
-			};
-			// Loop from latest_era backwards until we no longer find an era (this is earliest_era), then loop through looking for historical_eras
+			let mut found_earliest = false;
 			loop {
+				let mut db_key = DatabaseKey {
+					era,
+					index: 0usize,
+				};
 				while let Some(rlp_data) = db.get(col, &encode(&db_key)).expect("Low-level database error.") {
 					trace!("read_overlay: era={}, index={}", era, db_key.index);
 					let value = decode::<DatabaseValue>(&rlp_data).expect(&format!("read_overlay: Error decoding DatabaseValue era={}, index{}", era, db_key.index));
@@ -226,44 +229,50 @@ impl OverlayRecentDB {
 					if !found_earliest {
 						earliest_era = Some(era);
 					}
-
-					let last_hist_era_range = match historical_eras.pop() {
-						None => {
-							(era, era)
-						}
-						Some((start_era, end_era)) => {
-							(if (end_era - 1) == era { start_era } else { era }, era)
-						}
-					};
-					historical_eras.push(last_hist_era_range)
 				};
-				if !found_earliest {
-					found_earliest = true;
-				}
-				if db_key.index == 0 || era == 0{
+				// beginning of history
+				if era == 0 {
 					break;
 				}
-				era -= 1;
+				// db_key.index == 0 implies we did not have the era in our on-disk DB
+				if db_key.index == 0 {
+					found_earliest = true;
+					let earliest = earliest_era.unwrap_or(0);
+					_hist_to_check_highs = _hist_to_check_highs.iter().filter(|&&h| h < earliest).map(|&h| h).collect();
+//					// check for historical_eras
+					match _hist_to_check_highs.pop() {
+						Some(h) => era = h + 1,
+						_ => break
+					}
+					debug!("checking history, starting at era {}", era);
+				} else {
+					era -= 1;
+				}
 			}
 		}
 		trace!("Recovered {} overlay entries, {} journal entries", count, journal.len());
 		JournalOverlay {
 			backing_overlay: overlay,
 			pending_overlay: HashMap::default(),
-			journal,
-			latest_era,
-			earliest_era,
-			historical_eras,
-			cumulative_size,
+			journal: journal,
+			latest_era: latest_era,
+			earliest_era: earliest_era,
+			cumulative_size: cumulative_size,
 		}
 	}
 
-	fn should_delete_era(&self, era: u64) -> bool {
-		info!("should_delete_era: {:?}", era);
-		info!("historical eras: {:?}", self.historical_eras());
-		let ret = era != 999 && !self.historical_eras().iter().any(|&(h,l)| h >= era && era >= l);
-		info!("should_delete_era {:?}: {:?}", era, ret);
-		return ret
+	fn can_delete_height(&self, era: u64) -> bool {
+//		info!("should_delete_era: {:?}", era);
+		//info!("historical eras: {:?}");
+//		let ret = era != 999 && !self.historical_eras().iter().any(|&(h,l)| h >= era && era >= l);
+//		info!("should_delete_era {:?}: {:?}", era, ret);
+		match era {
+			0 => true,
+			_ => {
+				let bn = era - 1;
+				self.history_to_keep.iter().all(|&(h,l)| bn > h || bn < l)
+			}
+		}
 	}
 }
 
@@ -328,7 +337,7 @@ impl JournalDB for OverlayRecentDB {
 
 	fn earliest_era(&self) -> Option<u64> { self.journal_overlay.read().earliest_era }
 
-	fn historical_eras(&self) -> Vec<(u64,u64)> { self.journal_overlay.read().historical_eras.to_vec() }
+//	fn historical_eras(&self) -> Vec<(u64,u64)> { self.journal_overlay.read().historical_eras.clone() }
 
 	fn state(&self, key: &H256) -> Option<Bytes> {
 		let journal_overlay = self.journal_overlay.read();
@@ -390,29 +399,29 @@ impl JournalDB for OverlayRecentDB {
 			journal_overlay.earliest_era = Some(now);
 		}
 
-		match journal_overlay.historical_eras.len() {
-			0 => { journal_overlay.historical_eras = vec![(now, now)] }
-			_ => {
-				if !journal_overlay.historical_eras.iter().any(|&(h, l)| h > now && now > l) {
-					// not within existing ranges
-					let (bordering, mut not_bordering): (Vec<(u64, u64)>, Vec<_>) = journal_overlay.historical_eras.iter().partition(|&&(h, l)| now - 1 == h || now + 1 == l);
-					let n_bordering = bordering.len();
-
-//					println!("era {}, bordering {}: {:?}, not_bordering: {:?}", now, n_bordering, bordering, not_bordering);
-
-					match n_bordering {
-						0 => { Some((now, now))}
-						2 => { Some(if bordering[0].0 == bordering[1].1 { (bordering[1].0, bordering[0].1) } else { (bordering[0].0, bordering[1].1) }) }
-						1 => { Some(if bordering[0].0 + 1 == now { (now, bordering[0].1) } else { (bordering[0].0, now) }) }
-						_ => { panic!("How could a number border more than <0 or >2 ranges?") }
-					}.map(|p| not_bordering.push(p));
-
-					not_bordering.sort_by(|&(h1, _l1), &(h2, _l2)| h2.cmp(&h1));
-
-					journal_overlay.historical_eras = not_bordering;
-				}
-			}
-		}
+//		match journal_overlay.historical_eras.len() {
+//			0 => { journal_overlay.historical_eras = vec![(now, now)] }
+//			_ => {
+//				if !journal_overlay.historical_eras.iter().any(|&(h, l)| h > now && now > l) {
+//					// not within existing ranges
+//					let (bordering, mut not_bordering): (Vec<(u64, u64)>, Vec<_>) = journal_overlay.historical_eras.iter().partition(|&&(h, l)| now - 1 == h || now + 1 == l);
+//					let n_bordering = bordering.len();
+//
+////					println!("era {}, bordering {}: {:?}, not_bordering: {:?}", now, n_bordering, bordering, not_bordering);
+//
+//					match n_bordering {
+//						0 => { Some((now, now))}
+//						2 => { Some(if bordering[0].0 == bordering[1].1 { (bordering[1].0, bordering[0].1) } else { (bordering[0].0, bordering[1].1) }) }
+//						1 => { Some(if bordering[0].0 + 1 == now { (now, bordering[0].1) } else { (bordering[0].0, now) }) }
+//						_ => { panic!("How could a number border more than <0 or >2 ranges?") }
+//					}.map(|p| not_bordering.push(p));
+//
+//					not_bordering.sort_by(|&(h1, _l1), &(h2, _l2)| h2.cmp(&h1));
+//
+//					journal_overlay.historical_eras = not_bordering;
+//				}
+//			}
+//		}
 
 		journal_overlay.journal.entry(now).or_insert_with(Vec::new).push(JournalEntry { id: id.clone(), insertions: inserted_keys, deletions: removed_keys });
 		Ok(ops as u32)
@@ -425,14 +434,15 @@ impl JournalDB for OverlayRecentDB {
 		let journal_overlay = &mut *journal_overlay;
 
 		let mut ops = 0;
+		let should_delete= self.can_delete_height(end_era);
 		// apply old commits' details
 		if let Some(ref mut records) = journal_overlay.journal.get_mut(&end_era) {
 			let mut canon_insertions: Vec<(H256, DBValue)> = Vec::new();
 			let mut canon_deletions: Vec<H256> = Vec::new();
 			let mut overlay_deletions: Vec<H256> = Vec::new();
 			let mut index = 0usize;
-			for mut journal in records.drain(..) {
-				if self.should_delete_era(end_era) {
+			if should_delete {
+				for mut journal in records.drain(..) {
 					//delete the record from the db
 					let db_key = DatabaseKey {
 						era: end_era,
@@ -453,8 +463,10 @@ impl JournalDB for OverlayRecentDB {
 						}
 						overlay_deletions.append(&mut journal.insertions);
 					}
+					index += 1;
 				}
-				index += 1;
+			} else {
+				trace!(target: "journaldb", "Skipping journal deletion for era: {:?}", end_era);
 			}
 
 			ops += canon_insertions.len();
@@ -479,9 +491,10 @@ impl JournalDB for OverlayRecentDB {
 			}
 		}
 
-		if self.should_delete_era(end_era) {
+		journal_overlay.journal.remove(&end_era);
+		/* if should_delete {
 			journal_overlay.journal.remove(&end_era);
-		}
+		} */
 
 		if !journal_overlay.journal.is_empty() {
 			trace!(target: "journaldb", "Set earliest_era to {}", end_era + 1);
@@ -564,7 +577,7 @@ mod tests {
 
 	fn new_db() -> OverlayRecentDB {
 		let backing = Arc::new(kvdb_memorydb::create(0));
-		OverlayRecentDB::new(backing, None)
+		OverlayRecentDB::new(backing, None, ElasticArray1024::new())
 	}
 
 	#[test]
@@ -1131,67 +1144,67 @@ mod tests {
 		assert_eq!(jdb.earliest_era(), None);
 	}
 
-
-	#[test]
-	fn historical_eras() {
-		let shared_db = Arc::new(kvdb_memorydb::create(0));
-		let shared_db_cloned = shared_db.clone();
-
-		// empty DB
-		let mut jdb = OverlayRecentDB::new(shared_db_cloned, None);
-		assert_eq!(jdb.historical_eras().len(), 0);
-
-		// single journalled era.
-		let _key = jdb.insert(b"hello!");
-		let mut batch = jdb.backing().transaction();
-		jdb.emplace(keccak(b"0"), DBValue::from_slice(b"0"));
-		jdb.journal_under(&mut batch, 0, &keccak(b"0")).unwrap();
-		jdb.backing().write_buffered(batch);
-
-		assert_eq!(jdb.earliest_era(), Some(0));
-		assert_eq!(jdb.historical_eras().len(), 1);
-
-		// second journalled era.
-		let mut batch = jdb.backing().transaction();
-		jdb.emplace(keccak(b"1"), DBValue::from_slice(b"1"));
-		jdb.journal_under(&mut batch, 1, &keccak(b"1")).unwrap();
-		jdb.backing().write_buffered(batch);
-
-		assert_eq!(jdb.earliest_era(), Some(0));
-		assert_eq!(jdb.historical_eras().len(), 1);
-
-		// add eras in future.
-		let mut batch = jdb.backing().transaction();
-		jdb.emplace(keccak(b"3"), DBValue::from_slice(b"3"));
-		jdb.journal_under(&mut batch, 3, &keccak(b"3")).unwrap();
-		jdb.emplace(keccak(b"4"), DBValue::from_slice(b"4"));
-		jdb.journal_under(&mut batch, 4, &keccak(b"4")).unwrap();
-		jdb.emplace(keccak(b"5"), DBValue::from_slice(b"5"));
-		jdb.journal_under(&mut batch, 5, &keccak(b"5")).unwrap();
-		jdb.mark_canonical(&mut batch, 3, &keccak(b"3")).unwrap();
-		jdb.backing().write_buffered(batch);
-
-		assert_eq!(jdb.latest_era(), Some(5));
-		assert_eq!(jdb.earliest_era(), Some(4));
-		assert_eq!(jdb.historical_eras().len(), 2);
-
-		println!("{:?}", jdb.historical_eras());
-////		assert!(jdb.read_overlay);
-//		assert!(jdb.contains(&keccak(b"0")));
-//		assert!(!jdb.contains(&keccak(b"3")));
 //
-//		assert_eq!(jdb.historical_eras(), vec![(1, 0)]);
-
-//		// no journalled eras.
+//	#[test]
+//	fn historical_eras() {
+//		let shared_db = Arc::new(kvdb_memorydb::create(0));
+//		let shared_db_cloned = shared_db.clone();
+//
+//		// empty DB
+//		let mut jdb = OverlayRecentDB::new(shared_db_cloned, None);
+//		assert_eq!(jdb.historical_eras().len(), 0);
+//
+//		// single journalled era.
+//		let _key = jdb.insert(b"hello!");
 //		let mut batch = jdb.backing().transaction();
-//		jdb.mark_canonical(&mut batch, 1, &keccak(b"1")).unwrap();
+//		jdb.emplace(keccak(b"0"), DBValue::from_slice(b"0"));
+//		jdb.journal_under(&mut batch, 0, &keccak(b"0")).unwrap();
 //		jdb.backing().write_buffered(batch);
 //
-//		assert_eq!(jdb.earliest_era(), Some(1));
+//		assert_eq!(jdb.earliest_era(), Some(0));
+//		assert_eq!(jdb.historical_eras().len(), 1);
 //
-//		// reconstructed: no journal entries.
-//		drop(jdb);
-//		let jdb = OverlayRecentDB::new(shared_db, None);
-//		assert_eq!(jdb.earliest_era(), None);
-	}
+//		// second journalled era.
+//		let mut batch = jdb.backing().transaction();
+//		jdb.emplace(keccak(b"1"), DBValue::from_slice(b"1"));
+//		jdb.journal_under(&mut batch, 1, &keccak(b"1")).unwrap();
+//		jdb.backing().write_buffered(batch);
+//
+//		assert_eq!(jdb.earliest_era(), Some(0));
+//		assert_eq!(jdb.historical_eras().len(), 1);
+//
+//		// add eras in future.
+//		let mut batch = jdb.backing().transaction();
+//		jdb.emplace(keccak(b"3"), DBValue::from_slice(b"3"));
+//		jdb.journal_under(&mut batch, 3, &keccak(b"3")).unwrap();
+//		jdb.emplace(keccak(b"4"), DBValue::from_slice(b"4"));
+//		jdb.journal_under(&mut batch, 4, &keccak(b"4")).unwrap();
+//		jdb.emplace(keccak(b"5"), DBValue::from_slice(b"5"));
+//		jdb.journal_under(&mut batch, 5, &keccak(b"5")).unwrap();
+//		jdb.mark_canonical(&mut batch, 3, &keccak(b"3")).unwrap();
+//		jdb.backing().write_buffered(batch);
+//
+//		assert_eq!(jdb.latest_era(), Some(5));
+//		assert_eq!(jdb.earliest_era(), Some(4));
+//		assert_eq!(jdb.historical_eras().len(), 2);
+//
+//		println!("{:?}", jdb.historical_eras());
+//////		assert!(jdb.read_overlay);
+////		assert!(jdb.contains(&keccak(b"0")));
+////		assert!(!jdb.contains(&keccak(b"3")));
+////
+////		assert_eq!(jdb.historical_eras(), vec![(1, 0)]);
+//
+////		// no journalled eras.
+////		let mut batch = jdb.backing().transaction();
+////		jdb.mark_canonical(&mut batch, 1, &keccak(b"1")).unwrap();
+////		jdb.backing().write_buffered(batch);
+////
+////		assert_eq!(jdb.earliest_era(), Some(1));
+////
+////		// reconstructed: no journal entries.
+////		drop(jdb);
+////		let jdb = OverlayRecentDB::new(shared_db, None);
+////		assert_eq!(jdb.earliest_era(), None);
+//	}
 }
