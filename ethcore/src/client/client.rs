@@ -746,6 +746,10 @@ impl Client {
 			config.history
 		};
 
+		if config.historical_eras.len() > 0 {
+			info!(target: "client", "Permanently caching historical eras: {:?}", config.historical_eras);
+		}
+
 		if !chain.block_header_data(&chain.best_block_hash()).map_or(true, |h| state_db.journal_db().contains(&h.state_root())) {
 			warn!("State root not found for block #{} ({:x})", chain.best_block_number(), chain.best_block_hash());
 		}
