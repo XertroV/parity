@@ -437,7 +437,7 @@ impl JournalDB for OverlayRecentDB {
 
 		let mut ops = 0;
 		let should_delete= self.can_delete_height(end_era);
-		let prev_state_kept = self.can_delete_height(end_era - 1);
+		let _prev_state_kept = self.can_delete_height(if end_era > 0 { end_era - 1 } else { 0 });
 		// apply old commits' details
 		if let Some(ref mut records) = journal_overlay.journal.get_mut(&end_era) {
 			let mut canon_insertions: Vec<(H256, DBValue)> = Vec::new();
@@ -467,7 +467,9 @@ impl JournalDB for OverlayRecentDB {
 								}
 							}
 						}
-						canon_deletions = journal.deletions;
+						if should_delete {
+							canon_deletions = journal.deletions;
+						}
 					}
 					overlay_deletions.append(&mut journal.insertions);
 				}
