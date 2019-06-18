@@ -444,33 +444,39 @@ impl JournalDB for OverlayRecentDB {
 			let mut canon_deletions: Vec<H256> = Vec::new();
 			let mut overlay_deletions: Vec<H256> = Vec::new();
 			let mut index = 0usize;
-			if should_delete {
-				for mut journal in records.drain(..) {
-					//delete the record from the db
-					let db_key = DatabaseKey {
-						era: end_era,
-						index,
-					};
+			for mut journal in records.drain(..) {
+				//delete the record from the db
+				let db_key = DatabaseKey {
+					era: end_era,
+					index,
+				};
+
+				if should_delete {
 					batch.delete(self.column, &encode(&db_key));
 					trace!(target: "journaldb", "Delete journal for time #{}.{}: {}, (canon was {}): +{} -{} entries", end_era, index, journal.id, canon_id, journal.insertions.len(), journal.deletions.len());
-					{
-						if *canon_id == journal.id {
-							for h in &journal.insertions {
-								if let Some((d, rc)) = journal_overlay.backing_overlay.raw(&to_short_key(h)) {
-									if rc > 0 {
-										canon_insertions.push((h.clone(), d.clone())); //TODO: optimize this to avoid data copy
-									}
+				} else {
+					trace!(target: "journaldb", "Skipping delete of journal for time #{}.{}: {}, (canon was {}): +{} -{} entries", end_era, index, journal.id, canon_id, journal.insertions.len(), journal.deletions.len());
+				}
+
+				{
+					if *canon_id == journal.id {
+						for h in &journal.insertions {
+							if let Some((d, rc)) = journal_overlay.backing_overlay.raw(&to_short_key(h)) {
+								if rc > 0 {
+									canon_insertions.push((h.clone(), d.clone())); //TODO: optimize this to avoid data copy
 								}
 							}
-							canon_deletions = journal.deletions;
 						}
-						overlay_deletions.append(&mut journal.insertions);
+						canon_deletions = journal.deletions;
 					}
-					index += 1;
+					overlay_deletions.append(&mut journal.insertions);
 				}
-			} else {
-				trace!(target: "journaldb", "Skipping journal deletion for era: {:?}", end_era);
+				index += 1;
 			}
+
+			/* else {
+				trace!(target: "journaldb", "Skipping journal deletion for era: {:?}", end_era);
+			}*/
 
 			ops += canon_insertions.len();
 			ops += canon_deletions.len();

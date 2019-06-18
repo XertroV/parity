@@ -747,7 +747,7 @@ impl Client {
 		};
 
 		if config.historical_eras.len() > 0 {
-			info!(target: "client", "Permanently caching historical eras: {:?}", config.historical_eras);
+			info!(target: "client", "Permanently caching historical states (if already available): {:?}", config.historical_eras);
 		}
 
 		if !chain.block_header_data(&chain.best_block_hash()).map_or(true, |h| state_db.journal_db().contains(&h.state_root())) {
@@ -974,27 +974,18 @@ impl Client {
 			if !needs_pruning { break }
 
 			match state_db.journal_db().earliest_era() {
-				Some(era) => { if era % 100 == 99 { error!("Encountered earliest era at {:?}!", era) } }
-				_ => {}
-			}
-			match state_db.journal_db().earliest_era() {
 				Some(era) => {
 					if era + self.history <= number {
-						// consider pruning
-						if true { // era != 999 && self.historical_eras.iter().all(|&(h, l)| (h > era || era < l)) {
-							debug!(target: "client", "Pruning state for ancient era {}", era);
-							match chain.block_hash(era) {
-								Some(ancient_hash) => {
-									let mut batch = DBTransaction::new();
-									state_db.mark_canonical(&mut batch, era, &ancient_hash)?;
-									self.db.read().key_value().write_buffered(batch);
-									state_db.journal_db().flush();
-								}
-								None =>
-									debug!(target: "client", "Missing expected hash for block {}", era),
+						debug!(target: "client", "Pruning state for ancient era {}", era);
+						match chain.block_hash(era) {
+							Some(ancient_hash) => {
+								let mut batch = DBTransaction::new();
+								state_db.mark_canonical(&mut batch, era, &ancient_hash)?;
+								self.db.read().key_value().write_buffered(batch);
+								state_db.journal_db().flush();
 							}
-						} else {
-
+							None =>
+								debug!(target: "client", "Missing expected hash for block {}", era),
 						}
 					}
 				}
