@@ -430,7 +430,7 @@ impl JournalDB for OverlayRecentDB {
 	fn mark_canonical(&mut self, batch: &mut DBTransaction, end_era: u64, canon_id: &H256) -> io::Result<u32> {
 		trace!(target: "journaldb", "canonical: #{} ({})", end_era, canon_id);
 
-		if end_era > 90105 { panic!("killing as end_era > 90105 now."); }
+//		if end_era > 90105 { panic!("killing as end_era > 90105 now."); }
 
 		let mut journal_overlay = self.journal_overlay.write();
 		let journal_overlay = &mut *journal_overlay;
