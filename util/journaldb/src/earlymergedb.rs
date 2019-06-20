@@ -149,7 +149,7 @@ impl EarlyMergeDB {
 					// already counting. increment.
 					info.queue_refs += 1;
 					trace!(target: "jdb.fine", "    insert({}): In queue: Incrementing refs to {}", h, info.queue_refs);
-				}
+				},
 				Entry::Vacant(entry) => {
 					// this is the first entry for this node in the journal.
 					let in_archive = backing.get(col, h.as_bytes())
@@ -169,7 +169,7 @@ impl EarlyMergeDB {
 						queue_refs: 1,
 						in_archive: in_archive,
 					});
-				}
+				},
 			}
 		}
 	}
@@ -181,7 +181,7 @@ impl EarlyMergeDB {
 				// already counting. increment.
 				Entry::Occupied(mut entry) => {
 					entry.get_mut().queue_refs += 1;
-				}
+				},
 				// this is the first entry for this node in the journal.
 				// it is initialised to 1 if it was already in.
 				Entry::Vacant(entry) => {
@@ -189,7 +189,7 @@ impl EarlyMergeDB {
 						queue_refs: 1,
 						in_archive: Self::is_already_in(backing, col, h),
 					});
-				}
+				},
 			}
 		}
 		trace!(target: "jdb.fine", "replay_keys: (end) refs={:?}", refs);
@@ -225,21 +225,21 @@ impl EarlyMergeDB {
 							entry.remove();
 							Self::reset_already_in(batch, col, h);
 							trace!(target: "jdb.fine", "    remove({}): In archive, 1 in queue: Removing from queue and leaving in archive", h);
-						}
+						},
 						(1, false) => {
 							entry.remove();
 							batch.delete(col, h.as_bytes());
 							trace!(target: "jdb.fine", "    remove({}): Not in archive, only 1 ref in queue: Removing from queue and DB", h);
-						}
+						},
 						_ => panic!("Invalid value in refs: {:?}", entry.get()),
 					}
-				}
+				},
 				Entry::Vacant(_entry) => {
 					// Gets removed when moving from 1 to 0 additional refs. Should never be here at 0 additional refs.
 					//assert!(!Self::is_already_in(db, &h));
 					batch.delete(col, h.as_bytes());
 					trace!(target: "jdb.fine", "    remove({}): Not in queue - MUST BE IN ARCHIVE: Removing from DB", h);
-				}
+				},
 			}
 		}
 	}
@@ -249,8 +249,8 @@ impl EarlyMergeDB {
 		let (latest_era, reconstructed) = Self::read_refs(&*self.backing, self.column);
 		let refs = self.refs.as_ref().unwrap().write();
 		if *refs != reconstructed || latest_era != self.latest_era {
-			let clean_refs = refs.iter().filter_map(|(k, v)| if reconstructed.get(k) == Some(v) { None } else { Some((k.clone(), v.clone())) }).collect::<HashMap<_, _>>();
-			let clean_recon = reconstructed.into_iter().filter_map(|(k, v)| if refs.get(&k) == Some(&v) { None } else { Some((k.clone(), v.clone())) }).collect::<HashMap<_, _>>();
+			let clean_refs = refs.iter().filter_map(|(k, v)| if reconstructed.get(k) == Some(v) {None} else {Some((k.clone(), v.clone()))}).collect::<HashMap<_, _>>();
+			let clean_recon = reconstructed.into_iter().filter_map(|(k, v)| if refs.get(&k) == Some(&v) {None} else {Some((k.clone(), v.clone()))}).collect::<HashMap<_, _>>();
 			warn!(target: "jdb", "mem: {:?}  !=  log: {:?}", clean_refs, clean_recon);
 			false
 		} else {
@@ -288,13 +288,14 @@ impl EarlyMergeDB {
 		}
 		(latest_era, refs)
 	}
+
 }
 
 impl HashDB<KeccakHasher, DBValue> for EarlyMergeDB {
 	fn get(&self, key: &H256) -> Option<DBValue> {
 		if let Some((d, rc)) = self.overlay.raw(key) {
 			if rc > 0 {
-				return Some(d.clone());
+				return Some(d.clone())
 			}
 		}
 		self.payload(key)
@@ -325,7 +326,7 @@ impl ::traits::KeyedHashDB for EarlyMergeDB {
 			match ret.entry(key) {
 				Entry::Occupied(mut entry) => {
 					*entry.get_mut() += refs;
-				}
+				},
 				Entry::Vacant(entry) => {
 					entry.insert(refs);
 				}
@@ -361,7 +362,7 @@ impl JournalDB for EarlyMergeDB {
 			Some(ref c) => c.read().heap_size_of_children(),
 			None => 0
 		}
-	}
+ 	}
 
 	fn state(&self, id: &H256) -> Option<Bytes> {
 		self.backing.get_by_prefix(self.column, &id[0..DB_PREFIX_LEN]).map(|b| b.into_vec())
@@ -394,17 +395,11 @@ impl JournalDB for EarlyMergeDB {
 
 			let removes: Vec<H256> = drained
 				.iter()
-				.filter_map(|(k, &(_, c))| if c < 0 { Some(k.clone()) } else { None })
+				.filter_map(|(k, &(_, c))| if c < 0 {Some(k.clone())} else {None})
 				.collect();
 			let inserts: Vec<(H256, _)> = drained
 				.into_iter()
-				.filter_map(|(k, (v, r))| if r > 0 {
-					assert!(r == 1);
-					Some((k, v))
-				} else {
-					assert!(r >= -1);
-					None
-				})
+				.filter_map(|(k, (v, r))| if r > 0 { assert!(r == 1); Some((k, v)) } else { assert!(r >= -1); None })
 				.collect();
 
 			// TODO: check all removes are in the db.
@@ -468,16 +463,16 @@ impl JournalDB for EarlyMergeDB {
 							// already expunged from the queue (which is allowed since the key is in the archive).
 							// leave well alone.
 						}
-						Some(RefInfo { queue_refs: 1, in_archive: false }) => {
+						Some( RefInfo{queue_refs: 1, in_archive: false} ) => {
 							// just delete the refs entry.
 							refs.remove(k);
 						}
-						Some(RefInfo { queue_refs: x, in_archive: false }) => {
+						Some( RefInfo{queue_refs: x, in_archive: false} ) => {
 							// must set already in; ,
 							Self::set_already_in(batch, self.column, k);
-							refs.insert(k.clone(), RefInfo { queue_refs: x - 1, in_archive: true });
+							refs.insert(k.clone(), RefInfo{ queue_refs: x - 1, in_archive: true });
 						}
-						Some(RefInfo { in_archive: true, .. }) => {
+						Some( RefInfo{in_archive: true, ..} ) => {
 							// Invalid! Reinserted the same key twice.
 							warn!("Key {} inserted twice into same fork.", k);
 						}
@@ -532,6 +527,7 @@ impl JournalDB for EarlyMergeDB {
 
 #[cfg(test)]
 mod tests {
+
 	use keccak::keccak;
 	use hash_db::HashDB;
 	use super::*;
@@ -711,6 +707,7 @@ mod tests {
 
 	#[test]
 	fn fork_same_key_one() {
+
 		let mut jdb = new_db();
 		jdb.commit_batch(0, &keccak(b"0"), None).unwrap();
 		assert!(jdb.can_reconstruct_refs());
@@ -919,7 +916,7 @@ mod tests {
 		assert!(jdb.can_reconstruct_refs());
 
 		jdb.insert(b"foo");
-		jdb.commit_batch(3, &keccak(b"3"), Some((2, keccak(b"2")))).unwrap();    // BROKEN
+		jdb.commit_batch(3, &keccak(b"3"), Some((2, keccak(b"2")))).unwrap();	// BROKEN
 		assert!(jdb.can_reconstruct_refs());
 		assert!(jdb.contains(&foo));
 
@@ -993,9 +990,8 @@ mod tests {
 			assert!(jdb.can_reconstruct_refs());
 			assert!(jdb.contains(&foo));
 
-			// incantation to reopen the db
-		};
-		{
+		// incantation to reopen the db
+		}; {
 			let mut jdb = EarlyMergeDB::new(shared_db.clone(), None);
 
 			jdb.remove(&foo);
@@ -1003,18 +999,16 @@ mod tests {
 			assert!(jdb.can_reconstruct_refs());
 			assert!(jdb.contains(&foo));
 
-			// incantation to reopen the db
-		};
-		{
+		// incantation to reopen the db
+		}; {
 			let mut jdb = EarlyMergeDB::new(shared_db.clone(), None);
 
 			jdb.commit_batch(5, &keccak(b"5"), Some((3, keccak(b"3")))).unwrap();
 			assert!(jdb.can_reconstruct_refs());
 			assert!(jdb.contains(&foo));
 
-			// incantation to reopen the db
-		};
-		{
+		// incantation to reopen the db
+		}; {
 			let mut jdb = EarlyMergeDB::new(shared_db, None);
 
 			jdb.commit_batch(6, &keccak(b"6"), Some((4, keccak(b"4")))).unwrap();

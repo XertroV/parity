@@ -972,21 +972,18 @@ impl Client {
 				state_db.journal_db().journal_size() >= self.config.history_mem;
 
 			if !needs_pruning { break }
-
 			match state_db.journal_db().earliest_era() {
-				Some(era) => {
-					if era + self.history <= number {
-						debug!(target: "client", "Pruning state for ancient era {}", era);
-						match chain.block_hash(era) {
-							Some(ancient_hash) => {
-								let mut batch = DBTransaction::new();
-								state_db.mark_canonical(&mut batch, era, &ancient_hash)?;
-								self.db.read().key_value().write_buffered(batch);
-								state_db.journal_db().flush();
-							}
-							None =>
-								debug!(target: "client", "Missing expected hash for block {}", era),
+				Some(era) if era + self.history <= number => {
+					trace!(target: "client", "Pruning state for ancient era {}", era);
+					match chain.block_hash(era) {
+						Some(ancient_hash) => {
+							let mut batch = DBTransaction::new();
+							state_db.mark_canonical(&mut batch, era, &ancient_hash)?;
+							self.db.read().key_value().write_buffered(batch);
+							state_db.journal_db().flush();
 						}
+						None =>
+							debug!(target: "client", "Missing expected hash for block {}", era),
 					}
 				}
 				_ => break, // means that every era is kept, no pruning necessary.
@@ -1059,20 +1056,13 @@ impl Client {
 		self.block_header(id).and_then(|header| {
 			let db = self.state_db.read().boxed_clone();
 
-			println!("state_at bn:{:?} has_block:{:?}", block_number, self.pruning_has_block(block_number));
-
 			// early exit for pruned blocks
-			if db.is_pruned()
-				&& !self.pruning_has_block(block_number) {
-		        return None;
+			if db.is_pruned() && !self.pruning_has_block(block_number) {
+				return None;
 			}
 
 			let root = header.state_root();
-
-			println!("state_at -- header.state_root: {:?}, height: {:?}", root, block_number);
-			let res = State::from_existing(db, root, self.engine.account_start_nonce(block_number), self.factories.clone());
-			println!("state_at trie result: {:?}", res);
-			res.ok()
+			State::from_existing(db, root, self.engine.account_start_nonce(block_number), self.factories.clone()).ok()
 		})
 	}
 
